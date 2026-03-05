@@ -1,0 +1,703 @@
+
+Librerías y Directorio de trabajo
+
+```{r}
+
+############################################################
+# 1. Librerías
+############################################################
+
+options(scipen = 999)
+rm(list = ls())
+graphics.off()
+
+# Generales
+library(tidyverse)
+library(lubridate)
+library(janitor)
+
+# Espaciales
+library(sf)
+library(terra)      # para leer NetCDF y extraer por polígonos
+
+# Web / scraping
+library(rvest)
+library(stringr)
+library(xml2)
+
+############################################################
+# 0. Directorio de trabajo
+############################################################
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+getwd()
+
+###########################################################################################
+################## IMPORTANTE, LLENAR CON INFORMACION DE TU CUENCA ##################
+###########################################################################################
+cuenca_nombre    <- "Quilimari"       # nombre de la cuenca para el nombre de archivo
+archivo_shp      <- "Quilimari_WEAP.shp"
+cuenca_shp       <- file.path(getwd(), "Cuenca", cuenca_nombre, archivo_shp)
+nombre_subcuenca <- "Name"            # columna con el nombre de cada subcuenca
+
+# Rango temporal
+years_to_keep  <- 1970:2025
+months_to_keep <- NULL  # NULL = todos los meses; ej. c(9,10,11,12,1,2,3) para SONDJFM
+
+# Etiquetas dinámicas para nombres de archivo de salida
+year_start_label <- min(years_to_keep)
+year_end_label   <- max(years_to_keep)
+
+```
+
+
+Lista de netcdf separados
+```{r}
+############################################################
+# 2. Configuración CR2MET: URLs y helpers
+############################################################
+
+LIST_URL_PR   <- "https://ftp.cr2.cl/browse/cr2met/v2.5_best/pr/v2.5_best_day/"
+LIST_URL_TEMP <- "https://ftp.cr2.cl/browse/cr2met/v2.5_best/txn/v2.5_best_day/"  # tmin y tmax en mismo NC
+LIST_URL_ET0  <- "https://ftp.cr2.cl/browse/cr2met/v2.5_best/et0/v2.5_best_day/"
+
+# ---- 2.1. Listar archivos remotos .nc en un índice HTML ----
+list_remote_nc_files <- function(list_url) {
+  page  <- read_html(list_url)
+  hrefs <- page |>
+    html_elements("a") |>
+    html_attr("href")
+
+  hrefs_nc <- hrefs[str_detect(tolower(hrefs), "\\.nc$")]
+
+  base_domain <- "https://ftp.cr2.cl"
+  urls <- ifelse(
+    str_starts(hrefs_nc, "http"),
+    hrefs_nc,
+    paste0(base_domain, hrefs_nc)
+  )
+
+  tibble(
+    filename = basename(hrefs_nc),
+    url      = urls
+  )
+}
+
+# ---- 2.2. Filtrar por año/mes según patrón CR2MET_*_YYYY_MM_005deg.nc ----
+filter_by_year_month <- function(df, years = NULL, months = NULL) {
+  if (is.null(years) && is.null(months)) return(df)
+
+  pattern <- ".*_(\\d{4})_(\\d{2})_005deg\\.nc$"
+  m <- str_match(df$filename, pattern)
+  year  <- as.integer(m[, 2])
+  month <- as.integer(m[, 3])
+
+  keep <- rep(TRUE, nrow(df))
+  if (!is.null(years))  keep <- keep & year  %in% years
+  if (!is.null(months)) keep <- keep & month %in% months
+
+  df[keep & !is.na(year) & !is.na(month), , drop = FALSE]
+}
+
+```
+
+
+Geometría de estudio
+
+```{r}
+#############################################################
+# 3. Geometría de estudio (shapefile de subcuencas)
+#############################################################
+
+library(sf)
+library(dplyr)
+
+# ============================================================
+# Helpers de geometría (sin dependencia de lwgeom)
+# ============================================================
+
+# Reparar geometrías inválidas
+.make_valid2 <- function(x) {
+  sf::st_make_valid(x)
+}
+
+# Limpieza básica de un sf: eliminar Z/M, vacíos y nulos
+.clean_sf_basic <- function(sfobj) {
+  sfobj <- st_zm(sfobj, drop = TRUE, what = "ZM")
+  sfobj <- sfobj[!st_is_empty(sfobj), ]
+  sfobj <- sfobj[!is.na(st_geometry(sfobj)), ]
+  sfobj
+}
+
+# Castear a MULTIPOLYGON solo si es necesario (evita warnings innecesarios)
+.safe_to_multipoly <- function(g) {
+  gtypes <- unique(sf::st_geometry_type(g))
+  needs_extract <- any(gtypes %in% c("GEOMETRYCOLLECTION", "LINESTRING",
+                                     "MULTILINESTRING", "POINT", "MULTIPOINT"))
+  needs_cast    <- any(gtypes == "POLYGON")
+  if (needs_extract) g <- sf::st_collection_extract(g, "POLYGON")
+  if (needs_cast)    g <- sf::st_cast(g, "MULTIPOLYGON", warn = FALSE)
+  g
+}
+
+# Limpiar una sfc: válida + colección extraída + cast a MULTIPOLYGON si hace falta
+.clean_geom <- function(g, crs) {
+  gg <- st_sfc(g, crs = crs)
+  gg <- gg[!st_is_empty(gg)]
+  gg <- gg[!is.na(gg)]
+  if (length(gg) == 0) return(st_sfc(st_geometrycollection(), crs = crs))
+  gg <- sf::st_make_valid(gg)
+  gg <- .safe_to_multipoly(gg)
+  gg <- gg[!st_is_empty(gg)]
+  gg
+}
+
+# ============================================================
+# Repair + Union robusto: repara hasta que funcione
+# ============================================================
+
+.repair_and_union <- function(sf_group, name = "NA") {
+
+  crs0 <- st_crs(sf_group)
+  g <- st_geometry(sf_group)
+
+  g <- st_zm(g, drop = TRUE, what = "ZM")
+  g <- g[!st_is_empty(g)]
+  g <- g[!is.na(g)]
+  if (length(g) == 0) {
+    stop(paste0("Subcuenca '", name, "' sin geometría (vacía/nula)."))
+  }
+
+  if (sf::st_is_longlat(st_sfc(g[1], crs = crs0))) {
+    simp_tol <- 5e-10
+  } else {
+    simp_tol <- 0.05
+  }
+
+  # Intento 1: make_valid + union directo
+  g1 <- .clean_geom(g, crs0)
+  out <- try(suppressWarnings(st_union(g1)), silent = TRUE)
+  if (!inherits(out, "try-error")) return(.clean_geom(out, crs0))
+
+  # Intento 2: buffer(0) + union
+  g2 <- try(suppressWarnings(st_buffer(g1, 0)), silent = TRUE)
+  if (!inherits(g2, "try-error")) {
+    out <- try(suppressWarnings(st_union(g2)), silent = TRUE)
+    if (!inherits(out, "try-error")) return(.clean_geom(out, crs0))
+  }
+
+  # Intento 3: simplify mínimo + make_valid + union
+  g3 <- try(suppressWarnings(
+    st_simplify(g1, dTolerance = simp_tol, preserveTopology = TRUE)
+  ), silent = TRUE)
+  if (!inherits(g3, "try-error")) {
+    g3 <- sf::st_make_valid(g3)
+    g3 <- .safe_to_multipoly(g3)
+    out <- try(suppressWarnings(st_union(g3)), silent = TRUE)
+    if (!inherits(out, "try-error")) return(.clean_geom(out, crs0))
+  }
+
+  stop(paste0(
+    "No se pudo reparar/disolver la subcuenca: '", name, "'. ",
+    "Sugerencia: revisar geometría original en QGIS."
+  ))
+}
+
+# ============================================================
+# 3.0 Leer shapefile
+# ============================================================
+
+shp <- read_sf(cuenca_shp)
+shp <- .clean_sf_basic(shp)
+
+# ============================================================
+# 3.1 CRS (si viene vacío, asignar con heurística)
+# ============================================================
+
+if (is.na(st_crs(shp))) {
+  bb <- st_bbox(shp)
+  looks_lonlat <- max(abs(c(bb["xmin"], bb["xmax"]))) <= 180 &&
+                  max(abs(c(bb["ymin"], bb["ymax"]))) <= 90
+  st_crs(shp) <- if (looks_lonlat) 4326 else 32719  # ajusta 32719 si no es UTM 19S
+  cat("⚠ CRS ausente: se asignó", ifelse(looks_lonlat, "EPSG:4326", "EPSG:32719"), "\n")
+}
+
+# Reparación pre-dissolve
+shp <- .make_valid2(shp)
+shp <- .safe_to_multipoly(shp)
+shp <- .clean_sf_basic(shp)
+
+# ============================================================
+# 3.2 Dissolve robusto por subcuenca
+# ============================================================
+
+# Apagar S2 durante operaciones topológicas
+old_s2 <- sf::sf_use_s2()
+sf::sf_use_s2(FALSE)
+on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+
+if (nombre_subcuenca %in% names(shp)) {
+
+  lst <- split(shp, shp[[nombre_subcuenca]])
+
+  out_list <- lapply(names(lst), function(nm) {
+    geom_u <- .repair_and_union(lst[[nm]], name = nm)
+    st_sf(Subcuenca = nm, geometry = geom_u)
+  })
+
+  shp <- do.call(rbind, out_list)
+
+} else {
+  cat("⚠ Columna '", nombre_subcuenca, "' no encontrada. Se crean subcuencas genéricas.\n")
+  shp <- shp %>% mutate(Subcuenca = paste0("SubC_", row_number()))
+}
+
+# Post-dissolve: limpieza final
+shp <- .make_valid2(shp)
+shp <- .safe_to_multipoly(shp)
+shp <- .clean_sf_basic(shp)
+
+# ============================================================
+# 3.3 ID únicos
+# ============================================================
+
+shp <- shp %>% ungroup() %>% mutate(ID = row_number())
+
+# ============================================================
+# 3.4 Área en hectáreas
+# ============================================================
+
+if (st_is_longlat(shp)) {
+  cc      <- st_coordinates(st_centroid(st_union(st_geometry(shp))))
+  zone    <- floor((cc[1] + 180) / 6) + 1
+  epsg_utm <- 32700 + zone  # hemisferio sur
+  shp_area <- st_transform(shp, epsg_utm)
+  shp$area_ha <- as.numeric(st_area(shp_area)) / 10000
+} else {
+  shp$area_ha <- as.numeric(st_area(shp)) / 10000
+}
+
+# ============================================================
+# 3.5 Transformar a WGS84 para extracción con NetCDF
+# ============================================================
+
+shp <- st_transform(shp, 4326)
+
+cat("✅ Shapefile listo:", nrow(shp), "subcuencas.\n")
+print(shp %>% st_drop_geometry() %>% select(ID, Subcuenca, area_ha))
+
+# ============================================================
+# 3.6 Guardar shapefile reparado con sufijo "_mejorado"
+# ============================================================
+shp_mejorado_path <- file.path(
+  dirname(cuenca_shp),
+  paste0(tools::file_path_sans_ext(basename(cuenca_shp)), "_mejorado.shp")
+)
+sf::st_write(shp, shp_mejorado_path, delete_layer = TRUE, quiet = TRUE)
+cat("✅ Shapefile reparado guardado en:", shp_mejorado_path, "\n")
+
+```
+
+Función de extracción
+```{r}
+############################################################
+# 4. Función de extracción desde un NetCDF para UN polígono
+############################################################
+
+fn_extract_from_nc <- function(nc_i, sf_i, var, original_filename) {
+
+  # 1) Cargar raster completo
+  r_all       <- terra::rast(nc_i)
+  layer_names <- names(r_all)
+
+  # 2) Seleccionar capas que correspondan a la variable (ej. "pr_1", "pr_2", ...)
+  sel <- startsWith(layer_names, paste0(var, "_")) | (layer_names == var)
+  if (!any(sel)) {
+    stop(paste0(
+      "Variable '", var, "' no encontrada en el NetCDF. ",
+      "Capas disponibles: ", paste(layer_names, collapse = ", ")
+    ))
+  }
+  r <- r_all[[which(sel)]]
+
+  # 3) Reproyectar el polígono al CRS del raster
+  # FIX: terra::crs() devuelve "" (no NA) cuando no hay CRS definido
+  r_crs_wkt <- terra::crs(r)
+  if (!is.null(r_crs_wkt) && nchar(trimws(r_crs_wkt)) > 0) {
+    sf_i <- sf::st_transform(sf_i, sf::st_crs(r_crs_wkt))
+  }
+  v <- terra::vect(sf_i)
+
+  # 4) Extraer media sobre el polígono
+  vals <- terra::extract(r, v, fun = mean, na.rm = TRUE, ID = FALSE)
+
+  # 5) Parsear AÑO y MES desde el nombre original del archivo
+  m  <- regexec("_(\\d{4})_(\\d{2})_005deg\\.nc$", original_filename)
+  mm <- regmatches(original_filename, m)[[1]]
+  if (length(mm) != 3) {
+    stop(paste0("No se pudo parsear año/mes del nombre de archivo: ", original_filename))
+  }
+  year  <- as.integer(mm[2])
+  month <- as.integer(mm[3])
+
+  # 6) Construir secuencia de fechas diarias
+  n_layers <- terra::nlyr(r)
+  fechas <- seq.Date(
+    from       = as.Date(sprintf("%04d-%02d-01", year, month)),
+    by         = "1 day",
+    length.out = n_layers
+  )
+
+  # 7) Tabla de salida
+  out <- tibble::tibble(
+    fecha = fechas,
+    valor = as.numeric(unlist(vals[1, ]))  # FIX: unlist() más robusto que [1, 1:n_layers]
+  ) %>%
+    dplyr::mutate(
+      año       = lubridate::year(fecha),
+      mes       = lubridate::month(fecha),
+      dia       = lubridate::day(fecha),
+      Subcuenca = sf_i$Subcuenca[1],
+      ID        = sf_i$ID[1]
+    )
+
+  return(out)
+}
+
+```
+
+Compilación de la extracción a formato tbl
+```{r}
+############################################################
+# 5. Bucle principal: descargar → extraer en todos los polígonos → borrar
+############################################################
+
+# 5.1 Listas de archivos remotos filtradas por año
+pr_remote   <- list_remote_nc_files(LIST_URL_PR)   %>% filter_by_year_month(years = years_to_keep, months = months_to_keep)
+temp_remote <- list_remote_nc_files(LIST_URL_TEMP) %>% filter_by_year_month(years = years_to_keep, months = months_to_keep)
+et0_remote  <- list_remote_nc_files(LIST_URL_ET0)  %>% filter_by_year_month(years = years_to_keep, months = months_to_keep)
+
+cat("Archivos a procesar — PR:", nrow(pr_remote),
+    "| TEMP:", nrow(temp_remote),
+    "| ET0:", nrow(et0_remote), "\n")
+
+# 5.2 Listas acumuladoras
+res_pr_all   <- list()
+res_tmin_all <- list()
+res_tmax_all <- list()
+res_et0_all  <- list()
+
+############################################################
+# 5A. Precipitación
+############################################################
+
+cat("=== Procesando precipitación (pr) ===\n")
+
+for (i in seq_len(nrow(pr_remote))) {
+  this_file <- pr_remote$filename[i]
+  this_url  <- pr_remote$url[i]
+  cat("  [", i, "/", nrow(pr_remote), "]", this_file, "\n")
+
+  tmp_nc <- tempfile(fileext = ".nc")
+  ok <- tryCatch({
+    utils::download.file(this_url, destfile = tmp_nc, mode = "wb", quiet = TRUE)
+    TRUE
+  }, error = function(e) {
+    cat("  ⚠ Error al descargar:", this_file, "— se omite.\n"); FALSE
+  })
+  if (!ok) { unlink(tmp_nc); next }
+
+  res_lista <- vector("list", length = nrow(shp))
+  for (j in seq_len(nrow(shp))) {
+    res_lista[[j]] <- tryCatch(
+      fn_extract_from_nc(tmp_nc, shp[j, ], var = "pr", original_filename = this_file),
+      error = function(e) {
+        cat("  ⚠ Error polígono", shp$Subcuenca[j], ":", conditionMessage(e), "\n"); NULL
+      }
+    )
+  }
+  res_pr_all[[i]] <- bind_rows(res_lista)
+  unlink(tmp_nc)
+}
+
+tbl_pr <- bind_rows(res_pr_all)
+cat("✅ Precipitación lista:", nrow(tbl_pr), "filas.\n")
+
+############################################################
+# 5B. Temperatura (tmin y tmax en el mismo NetCDF)
+############################################################
+
+cat("=== Procesando temperatura (tmin / tmax) ===\n")
+
+for (i in seq_len(nrow(temp_remote))) {
+  this_file <- temp_remote$filename[i]
+  this_url  <- temp_remote$url[i]
+  cat("  [", i, "/", nrow(temp_remote), "]", this_file, "\n")
+
+  tmp_nc <- tempfile(fileext = ".nc")
+  ok <- tryCatch({
+    utils::download.file(this_url, destfile = tmp_nc, mode = "wb", quiet = TRUE)
+    TRUE
+  }, error = function(e) {
+    cat("  ⚠ Error al descargar:", this_file, "— se omite.\n"); FALSE
+  })
+  if (!ok) { unlink(tmp_nc); next }
+
+  for (j in seq_len(nrow(shp))) {
+
+    res_tn <- tryCatch(
+      fn_extract_from_nc(tmp_nc, shp[j, ], var = "tmin", original_filename = this_file),
+      error = function(e) {
+        cat("  ⚠ Error tmin polígono", shp$Subcuenca[j], ":", conditionMessage(e), "\n"); NULL
+      }
+    )
+    if (!is.null(res_tn)) {
+      res_tn$variable <- "tmin"
+      res_tmin_all[[length(res_tmin_all) + 1]] <- res_tn
+    }
+
+    res_tx <- tryCatch(
+      fn_extract_from_nc(tmp_nc, shp[j, ], var = "tmax", original_filename = this_file),
+      error = function(e) {
+        cat("  ⚠ Error tmax polígono", shp$Subcuenca[j], ":", conditionMessage(e), "\n"); NULL
+      }
+    )
+    if (!is.null(res_tx)) {
+      res_tx$variable <- "tmax"
+      res_tmax_all[[length(res_tmax_all) + 1]] <- res_tx
+    }
+  }
+
+  unlink(tmp_nc)
+}
+
+tbl_temp_min <- bind_rows(res_tmin_all)
+tbl_temp_max <- bind_rows(res_tmax_all)
+cat("✅ Tmin lista:", nrow(tbl_temp_min), "filas. Tmax lista:", nrow(tbl_temp_max), "filas.\n")
+
+############################################################
+# 5C. ET0
+############################################################
+
+cat("=== Procesando ET0 (et0) ===\n")
+
+for (i in seq_len(nrow(et0_remote))) {
+  this_file <- et0_remote$filename[i]
+  this_url  <- et0_remote$url[i]
+  cat("  [", i, "/", nrow(et0_remote), "]", this_file, "\n")
+
+  tmp_nc <- tempfile(fileext = ".nc")
+  ok <- tryCatch({
+    utils::download.file(this_url, destfile = tmp_nc, mode = "wb", quiet = TRUE)
+    TRUE
+  }, error = function(e) {
+    cat("  ⚠ Error al descargar:", this_file, "— se omite.\n"); FALSE
+  })
+  if (!ok) { unlink(tmp_nc); next }
+
+  res_lista <- vector("list", length = nrow(shp))
+  for (j in seq_len(nrow(shp))) {
+    res_lista[[j]] <- tryCatch(
+      fn_extract_from_nc(tmp_nc, shp[j, ], var = "et0", original_filename = this_file),
+      error = function(e) {
+        cat("  ⚠ Error polígono", shp$Subcuenca[j], ":", conditionMessage(e), "\n"); NULL
+      }
+    )
+  }
+  res_et0_all[[i]] <- bind_rows(res_lista)
+  unlink(tmp_nc)
+}
+
+tbl_et0 <- bind_rows(res_et0_all)
+cat("✅ ET0 lista:", nrow(tbl_et0), "filas.\n")
+
+```
+
+Agregación de datos a nivel diario/mensual
+```{r}
+############################################################
+# 6. Agregaciones diarias y mensuales
+############################################################
+
+# --- 6.1 Precipitación diaria (largo → ancho) ---
+pr_diaria_long <- tbl_pr %>%
+  dplyr::group_by(Subcuenca, fecha, año, mes, dia) %>%
+  dplyr::summarise(valor = sum(valor, na.rm = TRUE), .groups = "drop")
+
+pr_diaria_resumen <- pr_diaria_long %>%
+  dplyr::select(fecha, Subcuenca, valor) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = valor) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.2 Precipitación mensual ---
+pr_month_long <- tbl_pr %>%
+  dplyr::group_by(Subcuenca, año, mes) %>%
+  dplyr::summarise(pp_mon = sum(valor, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(fecha = as.Date(paste(año, mes, "01", sep = "-")))
+
+pr_month_resumen <- pr_month_long %>%
+  dplyr::select(fecha, Subcuenca, pp_mon) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = pp_mon) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.3 Temperatura mínima diaria y mensual ---
+tmin_diaria_long <- tbl_temp_min %>%
+  dplyr::group_by(Subcuenca, fecha, año, mes, dia) %>%
+  dplyr::summarise(valor = mean(valor, na.rm = TRUE), .groups = "drop")
+
+tmin_diaria_resumen <- tmin_diaria_long %>%
+  dplyr::select(fecha, Subcuenca, valor) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = valor) %>%
+  dplyr::arrange(fecha)
+
+tmin_month_long <- tbl_temp_min %>%
+  dplyr::group_by(Subcuenca, año, mes) %>%
+  dplyr::summarise(tmin_mon = mean(valor, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(fecha = as.Date(paste(año, mes, "01", sep = "-")))
+
+tmin_month_resumen <- tmin_month_long %>%
+  dplyr::select(fecha, Subcuenca, tmin_mon) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = tmin_mon) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.4 Temperatura máxima diaria y mensual ---
+tmax_diaria_long <- tbl_temp_max %>%
+  dplyr::group_by(Subcuenca, fecha, año, mes, dia) %>%
+  dplyr::summarise(valor = mean(valor, na.rm = TRUE), .groups = "drop")
+
+tmax_diaria_resumen <- tmax_diaria_long %>%
+  dplyr::select(fecha, Subcuenca, valor) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = valor) %>%
+  dplyr::arrange(fecha)
+
+tmax_month_long <- tbl_temp_max %>%
+  dplyr::group_by(Subcuenca, año, mes) %>%
+  dplyr::summarise(tmax_mon = mean(valor, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(fecha = as.Date(paste(año, mes, "01", sep = "-")))
+
+tmax_month_resumen <- tmax_month_long %>%
+  dplyr::select(fecha, Subcuenca, tmax_mon) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = tmax_mon) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.5 Temperatura media (promedio Tmin + Tmax) ---
+tmean_diaria_long <- tmin_diaria_long %>%
+  rename(valor_tmin = valor) %>%
+  inner_join(
+    tmax_diaria_long %>% rename(valor_tmax = valor),
+    by = c("Subcuenca", "fecha", "año", "mes", "dia")
+  ) %>%
+  dplyr::mutate(valor = (valor_tmin + valor_tmax) / 2) %>%
+  dplyr::select(Subcuenca, fecha, año, mes, dia, valor)
+
+tmean_diaria_resumen <- tmean_diaria_long %>%
+  dplyr::select(fecha, Subcuenca, valor) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = valor) %>%
+  dplyr::arrange(fecha)
+
+tmean_month_long <- tmean_diaria_long %>%
+  dplyr::group_by(Subcuenca, año, mes) %>%
+  dplyr::summarise(tmean_mon = mean(valor, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(fecha = as.Date(paste(año, mes, "01", sep = "-")))
+
+tmean_month_resumen <- tmean_month_long %>%
+  dplyr::select(fecha, Subcuenca, tmean_mon) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = tmean_mon) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.6 ET0 diaria ---
+et0_diaria_long <- tbl_et0 %>%
+  dplyr::group_by(Subcuenca, fecha, año, mes, dia) %>%
+  dplyr::summarise(valor = sum(valor, na.rm = TRUE), .groups = "drop")
+
+et0_diaria_resumen <- et0_diaria_long %>%
+  dplyr::select(fecha, Subcuenca, valor) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = valor) %>%
+  dplyr::arrange(fecha)
+
+# --- 6.7 ET0 mensual ---
+et0_month_long <- tbl_et0 %>%
+  dplyr::group_by(Subcuenca, año, mes) %>%
+  dplyr::summarise(et0_mon = sum(valor, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(fecha = as.Date(paste(año, mes, "01", sep = "-")))
+
+et0_month_resumen <- et0_month_long %>%
+  dplyr::select(fecha, Subcuenca, et0_mon) %>%
+  tidyr::pivot_wider(names_from = Subcuenca, values_from = et0_mon) %>%
+  dplyr::arrange(fecha)
+
+cat("✅ Agregaciones completadas.\n")
+
+```
+
+Exportar
+```{r}
+############################################################
+# 7. Función de exportación custom (formato WEAP/DPL)
+############################################################
+
+export_custom_format <- function(df, file_path) {
+  # 1. Eliminar columnas auxiliares si existen
+  df <- df %>% dplyr::select(-any_of(c("año", "mes", "dia")))
+
+  # 2. Formatear la fecha como mm/dd/yyyy (primera columna)
+  df <- df %>%
+    mutate(across(1, ~ format(as.Date(.), "%m/%d/%Y")))
+
+  # 3. Encabezados personalizados
+  line1 <- paste0("#,", paste(seq_len(ncol(df) - 1), collapse = ","))
+  line2 <- paste0("$Columns = ", paste(names(df), collapse = ","))
+
+  # 4. Escribir encabezado
+  con <- file(file_path, "w", encoding = "UTF-8")
+  writeLines(c(line1, line2), con)
+  close(con)
+
+  # 5. Escribir datos (sin nombres, sin índice)
+  write.table(
+    df,
+    file_path,
+    sep       = ",",
+    row.names = FALSE,
+    col.names = FALSE,
+    quote     = FALSE,
+    append    = TRUE
+  )
+}
+
+############################################################
+# 8. Exportar resultados
+############################################################
+
+dir_out <- file.path(getwd(), "Results", cuenca_nombre)
+dir.create(dir_out, recursive = TRUE, showWarnings = FALSE)
+
+# Helper para construir paths de salida
+.out <- function(sufijo) {
+  file.path(dir_out, paste0(cuenca_nombre, "_", sufijo,
+                            "_cr2met2.5_", year_start_label, "_", year_end_label, ".csv"))
+}
+
+# Precipitación
+export_custom_format(pr_diaria_resumen,  .out("pp_diaria"))
+write.csv(pr_month_resumen,              .out("pp_mensual"),  row.names = FALSE)
+
+# Temperatura mínima
+export_custom_format(tmin_diaria_resumen, .out("tn_diaria"))
+write.csv(tmin_month_resumen,             .out("tn_mensual"), row.names = FALSE)
+
+# Temperatura máxima
+export_custom_format(tmax_diaria_resumen, .out("tx_diaria"))
+write.csv(tmax_month_resumen,             .out("tx_mensual"), row.names = FALSE)
+
+# Temperatura media
+export_custom_format(tmean_diaria_resumen, .out("tav_diaria"))
+write.csv(tmean_month_resumen,             .out("tav_mensual"), row.names = FALSE)
+
+# ET0
+export_custom_format(et0_diaria_resumen, .out("et0_diaria"))
+write.csv(et0_month_resumen,             .out("et0_mensual"), row.names = FALSE)
+
+cat("✅ Exportación completada en:", dir_out, "\n")
+
+```
