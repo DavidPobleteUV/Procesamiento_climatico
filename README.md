@@ -88,6 +88,7 @@ install.packages(c("tidyverse", "lubridate", "janitor",
 │       └── <archivo_shp>          ← Shapefile de subcuencas
 ├── nc_cache/                      ← Se crea automáticamente (NetCDF descargados)
 ├── Results/                       ← Se crea automáticamente
+├── scr/                           ← Scripts auxiliares (ver scr/README.md)
 └── CR2Met_bestday_extraccion_1959_2025_cr2met2_5_v4_web_DPL.Rmd
 ```
 
@@ -160,6 +161,43 @@ Los archivos mensuales se exportan como CSV estándar.
 | 5 | Loops de descarga (con caché local) y extracción para PR, temperatura y ET0 |
 | 6 | Agregaciones diarias y mensuales (formato largo → ancho) |
 | 7–8 | Función de exportación custom (formato WEAP) y escritura de archivos de salida |
+
+---
+
+## Mapa de la grilla sobre la cuenca
+
+`scr/mapa_grilla_CR2Met.R` genera dos mapas de la grilla CR2MET sobre la cuenca —
+uno en coordenadas geográficas y otro en UTM — con escala en km, flecha de norte,
+leyenda y pie de metadatos:
+
+| Salida (`Results/<cuenca>/mapas/`) | CRS | Ejes |
+|------------------------------------|-----|------|
+| `grilla_CR2Met_<cuenca>_latlon.png` | WGS 84 (EPSG:4326) | grados, sufijo O/S |
+| `grilla_CR2Met_<cuenca>_UTM.png` | UTM, zona inferida del centroide | km |
+| `grilla_CR2Met_<cuenca>.gpkg` | WGS 84 | grilla recortada con campo `frac_pct` |
+
+El relleno de cada celda es la **fracción de su área cubierta por la cuenca**, es
+decir el mismo peso que aplica `terra::extract(..., exact = TRUE)`, de modo que el
+mapa documenta el método de extracción y no solo la ubicación. Los centroides
+(`+` dentro, `×` fuera) muestran qué celdas entrarían bajo la regla "centroid-in",
+haciendo visible el sesgo descrito más arriba: en Aconcagua (7.453 km²), **347
+celdas intersectan la cuenca pero solo 290 tienen el centroide dentro**, y la suma
+de fracciones de área equivale a 287 celdas.
+
+La geometría de la grilla se lee del primer NetCDF disponible en `nc_cache/`; si no
+hay ninguno, se reconstruye con la geometría nominal de CR2MET v2.5 (extent
+−77…−66 / −57…−17, celda 0,05°). La barra de escala se calibra en la unidad del CRS
+de cada mapa: 1000 m/km en UTM, y en lat/lon los grados de longitud por km medidos
+con `st_distance` en la latitud central.
+
+```powershell
+Rscript "scr\mapa_grilla_CR2Met.R"
+```
+
+Se configura con los mismos tres parámetros del Chunk 1 (`cuenca_nombre`,
+`archivo_shp`, `nombre_subcuenca`) y usa el `_mejorado.shp` si ya existe.
+Requiere `sf`, `ggplot2` y `dplyr`; `terra`, `ggrepel` y `rstudioapi` son
+opcionales. Detalle completo de parámetros en [`scr/README.md`](scr/README.md).
 
 ---
 
