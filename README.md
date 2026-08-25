@@ -5,6 +5,10 @@
 **Fuente de datos:** [CR2MET v2.5 — Centro de Ciencia del Clima y la Resiliencia (CR)²](https://www.cr2.cl/datos-productos-grillados/)
 **Salida compatible con:** WEAP (Water Evaluation And Planning System)
 
+> **¿Primera vez con este repositorio?** Parte por
+> **[`readme_install.md`](readme_install.md)**: instalación de Git, R y RStudio,
+> cómo clonar el repositorio y cómo preparar tu cuenca, con enlaces a tutoriales de Git.
+
 ---
 
 ## ¿Qué hace este script?
@@ -85,12 +89,17 @@ install.packages(c("tidyverse", "lubridate", "janitor",
 /
 ├── Cuenca/
 │   └── <cuenca_nombre>/
-│       └── <archivo_shp>          ← Shapefile de subcuencas
+│       └── <archivo_shp>          ← Shapefile de subcuencas (lo aportas tú)
 ├── nc_cache/                      ← Se crea automáticamente (NetCDF descargados)
 ├── Results/                       ← Se crea automáticamente
 ├── scr/                           ← Scripts auxiliares (ver scr/README.md)
+├── readme_install.md              ← Guía de instalación desde cero
 └── CR2Met_bestday_extraccion_1959_2025_cr2met2_5_v4_web_DPL.Rmd
 ```
+
+`Cuenca/`, `Results/` y `nc_cache/` están en `.gitignore`: son datos, no código,
+y no viajan con el repositorio. Al clonarlo recibes `Cuenca/` con solo un
+`LEEME.md` adentro; el shapefile lo pones tú.
 
 ### Conexión a internet
 

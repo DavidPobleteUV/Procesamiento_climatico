@@ -93,14 +93,26 @@ dpi_out  <- 300
   NA_character_
 }
 
-.inicio <- getwd()
-if (interactive() && requireNamespace("rstudioapi", quietly = TRUE)) {
-  .ruta_doc <- try(rstudioapi::getActiveDocumentContext()$path, silent = TRUE)
-  if (!inherits(.ruta_doc, "try-error") && nzchar(.ruta_doc)) .inicio <- dirname(.ruta_doc)
+# Carpeta donde vive este script (RStudio o Rscript)
+.dir_script <- function() {
+  if (requireNamespace("rstudioapi", quietly = TRUE) &&
+      rstudioapi::isAvailable() &&
+      nzchar(rstudioapi::getActiveDocumentContext()$path)) {
+    return(dirname(rstudioapi::getActiveDocumentContext()$path))
+  }
+  args <- commandArgs(trailingOnly = FALSE)
+  f    <- sub("^--file=", "", grep("^--file=", args, value = TRUE))
+  if (length(f)) dirname(normalizePath(f)) else getwd()
 }
-dir_proyecto <- .buscar_raiz(.inicio)
+
+# 1) buscar hacia arriba una carpeta que contenga Cuenca/
+dir_proyecto <- .buscar_raiz(getwd())
+# 2) si no aparece, buscar desde la carpeta de este script
+if (is.na(dir_proyecto)) dir_proyecto <- .buscar_raiz(.dir_script())
+# 3) clon recien bajado sin Cuenca/: asumir el padre de scr/
 if (is.na(dir_proyecto)) {
-  stop("No se encontro la carpeta 'Cuenca'. Fija dir_proyecto manualmente.")
+  dir_proyecto <- normalizePath(file.path(.dir_script(), ".."),
+                                winslash = "/", mustWork = FALSE)
 }
 cat("Directorio del proyecto:", dir_proyecto, "\n")
 
@@ -201,7 +213,17 @@ if (usar_mejorado) {
     cat("Usando shapefile reparado:", basename(ruta_shp), "\n")
   }
 }
-if (!file.exists(ruta_shp)) stop("No existe el shapefile: ", ruta_shp)
+if (!file.exists(ruta_shp)) {
+  stop(
+    "No se encontro el shapefile:\n  ", ruta_shp, "\n\n",
+    "Antes de correr este script deja tu shapefile de subcuencas en:\n",
+    "  ", file.path(dir_proyecto, "Cuenca", cuenca_nombre), "\n",
+    "y ajusta 'cuenca_nombre', 'archivo_shp' y 'nombre_subcuenca' en el\n",
+    "bloque PARAMETROS de este script.\n\n",
+    "La carpeta Cuenca/ no viene con el repositorio (esta en .gitignore):\n",
+    "cada usuario aporta su propia cuenca. Ver readme_install.md.",
+    call. = FALSE)
+}
 
 old_s2 <- sf::sf_use_s2()
 sf::sf_use_s2(FALSE)   # operaciones topologicas planares; se restaura al final
