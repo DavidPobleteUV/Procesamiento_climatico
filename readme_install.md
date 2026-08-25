@@ -184,23 +184,31 @@ nombre_subcuenca <- "Subcuenca"   # la columna con el nombre de cada subcuenca
 
 ## Paso 6 — Correr los scripts
 
-### Mapa de la grilla CR2MET sobre tu cuenca
+**El orden importa.** Primero la extracción, después el mapa:
 
-Es lo más rápido para verificar que todo quedó bien instalado, porque no
-necesita descargar nada de internet:
+### 1. Extracción de series climáticas (script principal)
+
+`CR2Met_bestday_extraccion_1959_2025_cr2met2_5_v4_web_DPL.Rmd`
+
+Ábrelo en RStudio y ejecuta los chunks en orden. Es el que descarga los NetCDF
+desde `ftp.cr2.cl` y los deja en `nc_cache/`, así que necesitas internet y
+paciencia: son varios GB según el rango de años que pidas.
+
+Tiene que correr en RStudio (usa `rstudioapi` para ubicarse); no funciona con
+`Rscript`.
+
+### 2. Mapa de la grilla CR2MET sobre tu cuenca
 
 ```powershell
 Rscript "scr\mapa_grilla_CR2Met.R"
 ```
 
-O ábrelo en RStudio y presiona **Source**. Genera dos mapas (lat/lon y UTM) en
-`Results/<cuenca_nombre>/mapas/`.
+O ábrelo en RStudio y presiona **Source**. Toma la geometría de la grilla de
+los NetCDF que dejó el paso anterior en `nc_cache/`, por eso va después.
 
-### Extracción de series climáticas
-
-Abre `CR2Met_bestday_extraccion_1959_2025_cr2met2_5_v4_web_DPL.Rmd` en RStudio
-y ejecuta los chunks en orden. Descarga los NetCDF desde `ftp.cr2.cl`, así que
-necesitas internet y paciencia: son varios GB según el rango de años.
+> Qué hace cada script, cómo se configura y qué archivos produce está
+> documentado en **[`README.md`](README.md)** (y los scripts auxiliares en
+> [`scr/README.md`](scr/README.md)). Esta guía cubre solo la instalación.
 
 ---
 

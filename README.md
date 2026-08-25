@@ -125,6 +125,33 @@ Para cambiar de cuenca basta con modificar esos cinco parámetros.
 
 ---
 
+## Orden de ejecución
+
+**1. Extracción de series climáticas — script principal**
+
+`CR2Met_bestday_extraccion_1959_2025_cr2met2_5_v4_web_DPL.Rmd`, ejecutando los
+chunks en orden desde RStudio. Es el que descarga los NetCDF desde `ftp.cr2.cl`
+y los deja cacheados en `nc_cache/`, además de generar los CSV para WEAP y el
+shapefile `_mejorado.shp`.
+
+Requiere RStudio: usa `rstudioapi` para ubicar el directorio de trabajo, así que
+no corre con `Rscript` sin editar esa línea.
+
+**2. Mapa de la grilla sobre la cuenca — opcional**
+
+`scr/mapa_grilla_CR2Met.R`. Va después porque toma la geometría de la grilla de
+los NetCDF ya descargados en `nc_cache/`. Corre en RStudio o con `Rscript`.
+
+**3. Carga a WEAP — opcional**
+
+`scr/weap_create_band_branches.py`, que lee los CSV y el `_mejorado.shp` del
+paso 1. Ver [`scr/README.md`](scr/README.md).
+
+Si solo necesitas regenerar el `_mejorado.shp` sin volver a descargar NetCDF,
+usa `scr/preproceso_SIG_mejorado.R` en vez del paso 1.
+
+---
+
 ## Estructura del shapefile
 
 - Una columna con el nombre de cada subcuenca (definida en `nombre_subcuenca`).
@@ -193,11 +220,15 @@ haciendo visible el sesgo descrito más arriba: en Aconcagua (7.453 km²), **347
 celdas intersectan la cuenca pero solo 290 tienen el centroide dentro**, y la suma
 de fracciones de área equivale a 287 celdas.
 
-La geometría de la grilla se lee del primer NetCDF disponible en `nc_cache/`; si no
-hay ninguno, se reconstruye con la geometría nominal de CR2MET v2.5 (extent
-−77…−66 / −57…−17, celda 0,05°). La barra de escala se calibra en la unidad del CRS
-de cada mapa: 1000 m/km en UTM, y en lat/lon los grados de longitud por km medidos
-con `st_distance` en la latitud central.
+Se corre **después** de la extracción: la geometría de la grilla se lee del primer
+NetCDF disponible en `nc_cache/`. Si todavía no hay ninguno descargado, se
+reconstruye con la geometría nominal de CR2MET v2.5 (extent −77…−66 / −57…−17,
+celda 0,05°), de modo que el mapa igual sale, pero lo natural es correrlo con el
+caché ya poblado.
+
+La barra de escala se calibra en la unidad del CRS de cada mapa: 1000 m/km en UTM,
+y en lat/lon los grados de longitud por km medidos con `st_distance` en la latitud
+central.
 
 ```powershell
 Rscript "scr\mapa_grilla_CR2Met.R"
