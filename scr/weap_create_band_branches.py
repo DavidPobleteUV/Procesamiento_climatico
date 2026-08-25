@@ -91,11 +91,16 @@ def main():
         print("WARNING: pp and tav column labels differ:",
               set(pp_labels) ^ set(tav_labels))
 
-    # area lookup keyed by the band label (Subcuenca)
-    area_by_label = {r["Subcuenca"]: float(r["area_ha"]) for r in read_dbf(AREA_DBF)}
+    # area + latitud lookup keyed by the band label (Subcuenca)
+    dbf_rows = read_dbf(AREA_DBF)
+    area_by_label = {r["Subcuenca"]: float(r["area_ha"]) for r in dbf_rows}
+    lat_by_label  = {r["Subcuenca"]: float(r["lat_deg"]) for r in dbf_rows if r.get("lat_deg", "") != ""}
     missing_area = [l for l in pp_labels if l not in area_by_label]
+    missing_lat  = [l for l in pp_labels if l not in lat_by_label]
     if missing_area:
-        print("WARNING: no area found in DBF for:", missing_area)
+        print("WARNING: no area_ha found in DBF for:", missing_area)
+    if missing_lat:
+        print("WARNING: no lat_deg found in DBF for:", missing_lat)
 
     # group bands by catchment, preserving order
     catchments = {}
@@ -142,10 +147,14 @@ def main():
             area_val  = area_by_label.get(label)
             area_val  = None if area_val is None else round(area_val, 2)
             area_expr = None if area_val is None else f"{area_val * AREA_SCALE:.2f}"
+            lat_val   = lat_by_label.get(label)
+            lat_val   = None if lat_val is None else round(lat_val, 2)
+            lat_expr  = None if lat_val is None else f"{lat_val:.2f}"
 
             print(f"           Precipitation = {pp_expr}")
             print(f"           Temperature   = {tav_expr}")
             print(f"           Area          = {area_expr}")
+            print(f"           Latitude      = {lat_expr}")
 
             if not DRY_RUN:
                 if b is None:
@@ -156,6 +165,7 @@ def main():
                 bv_pp   = f"{child_path}:Precipitation"
                 bv_tav  = f"{child_path}:Temperature"
                 bv_area = f"{child_path}:Area"
+                bv_lat  = f"{child_path}:Latitude"
 
                 print(f"           [DEBUG] trying: {bv_pp}")
                 WEAP.BranchVariable(bv_pp).Expression  = pp_expr
@@ -166,6 +176,9 @@ def main():
                     # WEAP.BranchVariable(bv_area).Unit = "Hectare"   # no se puede setear via API
                     WEAP.BranchVariable(bv_area).Expression = area_expr
                     print(f"           [OK] Area assigned")
+                if lat_expr:
+                    WEAP.BranchVariable(bv_lat).Expression = lat_expr
+                    print(f"           [OK] Latitude assigned")
 
     print("\n----- summary -----")
     print(f"branches to create : {created}")

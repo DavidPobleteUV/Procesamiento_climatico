@@ -35,10 +35,10 @@ getwd()
 ###########################################################################################
 ################## IMPORTANTE, LLENAR CON INFORMACION DE TU CUENCA ##################
 ###########################################################################################
-cuenca_nombre    <- "LiguaPetorca"       # nombre de la cuenca para el nombre de archivo
-archivo_shp      <- "Subcuencas_RDM_LP_mejorado.shp"
+cuenca_nombre    <- "Aconcagua_catchments2026"       # nombre de la cuenca para el nombre de archivo
+archivo_shp      <- "Aconcagua_catchments2026.shp"
 cuenca_shp       <- file.path(getwd(), "Cuenca", cuenca_nombre, archivo_shp)
-nombre_subcuenca <- "Subcuenca"            # columna con el nombre de cada subcuenca
+nombre_subcuenca <- "Catchments"            # columna con el nombre de cada subcuenca
 
 # Rango temporal
 years_to_keep  <- 1975:2026
@@ -288,9 +288,9 @@ if (st_is_longlat(shp)) {
   zone    <- floor((cc[1] + 180) / 6) + 1
   epsg_utm <- 32700 + zone  # hemisferio sur
   shp_area <- st_transform(shp, epsg_utm)
-  shp$area_ha <- as.numeric(st_area(shp_area)) / 10000
+  shp$area_ha <- round(as.numeric(st_area(shp_area)) / 10000, 2)
 } else {
-  shp$area_ha <- as.numeric(st_area(shp)) / 10000
+  shp$area_ha <- round(as.numeric(st_area(shp)) / 10000, 2)
 }
 
 # ============================================================
@@ -299,12 +299,24 @@ if (st_is_longlat(shp)) {
 
 shp <- st_transform(shp, 4326)
 
+# Latitud del centroide en grados (WGS84), 2 decimales
+suppressWarnings({
+  shp$lat_deg <- round(sf::st_coordinates(sf::st_centroid(shp))[, "Y"], 2)
+})
+
 cat("✅ Shapefile listo:", nrow(shp), "subcuencas.\n")
-print(shp %>% st_drop_geometry() %>% select(ID, Subcuenca, area_ha))
+print(shp %>% st_drop_geometry() %>% select(ID, Subcuenca, area_ha, lat_deg))
 
 # ============================================================
 # 3.6 Guardar shapefile reparado con sufijo "_mejorado"
 # ============================================================
+# Forzar 2 decimales en el DBF: el driver shapefile escribe los
+# numeric con ancho/precision por defecto (N(24,15)) ignorando round().
+# Convertir a character formateado garantiza columnas DBF cortas y limpias;
+# downstream se reparsean con float() / as.numeric().
+shp$area_ha <- formatC(shp$area_ha, format = "f", digits = 2)
+shp$lat_deg <- formatC(shp$lat_deg, format = "f", digits = 2)
+
 shp_mejorado_path <- file.path(
   dirname(cuenca_shp),
   paste0(tools::file_path_sans_ext(basename(cuenca_shp)), "_mejorado.shp")
