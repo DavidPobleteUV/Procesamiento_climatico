@@ -94,6 +94,53 @@ NetCDF), `ggrepel` (etiquetas de subcuenca sin solape), `rstudioapi`.
 
 ---
 
+## `series_anuales_decadales.R`
+
+Lee los CSV **mensuales** de `Results/<cuenca>/` y grafica la evolución anual de
+cada variable con el promedio de cada década superpuesto, para leer la señal de
+cambio climático y de la megasequía. Salidas en `Results/<cuenca>/series/`:
+
+- `series_anuales_decadales_<cuenca>.png` — un panel por variable: serie anual
+  (línea delgada), promedio decadal (segmento grueso, punteado si la década
+  tiene menos de 10 años), promedio del período completo y franja gris de
+  megasequía.
+- `cambio_decadal_<cuenca>.png` — cambio de cada década respecto a la primera,
+  en % para precipitación y en Δ°C para temperaturas.
+- `series_anuales_<cuenca>.csv` y `promedios_decadales_<cuenca>.csv`.
+
+### Decisiones metodológicas
+
+- **Promedio areal ponderado por `area_ha`** del `_mejorado.shp`, no promedio
+  simple entre subcuencas. Si el shapefile no está, cae a promedio simple y lo
+  avisa por consola.
+- **Año hidrológico abril–marzo** por defecto, etiquetado por el año de inicio
+  (2010 = abr 2010 – mar 2011). Se apaga con `anio_hidrologico <- FALSE`.
+- **Descarta los años sin 12 meses.** La serie CR2MET termina a mitad de año; sin
+  este filtro el último año se vería como una sequía inexistente. Informa por
+  consola qué años descartó.
+- Las temperaturas anuales son el promedio de los 12 valores mensuales, no un
+  promedio ponderado por días del mes. La diferencia es despreciable.
+
+### Uso
+
+```powershell
+Rscript "C:\Users\David\Documents\GitHub_DPL\CR2Met_extraction\scr\series_anuales_decadales.R"
+```
+
+Parámetros: `cuenca_nombre`, `variables` (`pp`, `tav`, `tn`, `tx`, `et0`),
+`subcuencas` (`NULL` = todas), `ponderar_por_area`, `anio_hidrologico` /
+`mes_inicio`, `solo_anios_completos`, `decada_min_anios`, `inicio_megasequia`,
+`ancho_cm` / `dpi_out`.
+
+Requisitos: `ggplot2`, `dplyr`, `tidyr`. Opcionales: `sf` (áreas para la
+ponderación), `rstudioapi`.
+
+**CR2MET no entrega caudales**: este script cubre precipitación, temperaturas y
+evapotranspiración de referencia. Para caudales hay que sumar una fuente externa
+(DGA, salidas de WEAP).
+
+---
+
 ## `weap_create_band_branches.py`
 
 Crea las **bandas de elevación como sub-ramas** de cada catchment existente en

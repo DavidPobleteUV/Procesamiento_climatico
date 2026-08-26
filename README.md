@@ -142,7 +142,13 @@ no corre con `Rscript` sin editar esa línea.
 `scr/mapa_grilla_CR2Met.R`. Va después porque toma la geometría de la grilla de
 los NetCDF ya descargados en `nc_cache/`. Corre en RStudio o con `Rscript`.
 
-**3. Carga a WEAP — opcional**
+**3. Series anuales y promedios decadales — opcional**
+
+`scr/series_anuales_decadales.R`. Consume los CSV **mensuales** del paso 1 y
+grafica la evolución anual de cada variable con el promedio de cada década
+superpuesto. Ver la sección siguiente.
+
+**4. Carga a WEAP — opcional**
 
 `scr/weap_create_band_branches.py`, que lee los CSV y el `_mejorado.shp` del
 paso 1. Ver [`scr/README.md`](scr/README.md).
@@ -238,6 +244,60 @@ Se configura con los mismos tres parámetros del Chunk 1 (`cuenca_nombre`,
 `archivo_shp`, `nombre_subcuenca`) y usa el `_mejorado.shp` si ya existe.
 Requiere `sf`, `ggplot2` y `dplyr`; `terra`, `ggrepel` y `rstudioapi` son
 opcionales. Detalle completo de parámetros en [`scr/README.md`](scr/README.md).
+
+---
+
+## Series anuales y promedios decadales
+
+`scr/series_anuales_decadales.R` toma los CSV mensuales del paso 1 y produce dos
+figuras y dos tablas en `Results/<cuenca>/series/`:
+
+| Salida | Contenido |
+|--------|-----------|
+| `series_anuales_decadales_<cuenca>.png` | Un panel por variable: serie anual, promedio de cada década superpuesto, promedio del período completo y la megasequía sombreada |
+| `cambio_decadal_<cuenca>.png` | Cambio de cada década respecto a la primera (% en precipitación, Δ°C en temperaturas) |
+| `series_anuales_<cuenca>.csv` | Valor anual de cada variable |
+| `promedios_decadales_<cuenca>.csv` | Promedio, número de años y cambio por década |
+
+Tres decisiones metodológicas que conviene conocer antes de citar los números:
+
+- **Promedio areal ponderado por área.** La agregación entre subcuencas usa
+  `area_ha` del `_mejorado.shp`. Un promedio simple sobrerrepresenta a las
+  subcuencas chicas. Si el shapefile no está, cae a promedio simple avisando.
+- **Año hidrológico abril–marzo** por defecto (`anio_hidrologico <- TRUE`),
+  etiquetado por el año de inicio. Con `FALSE` usa año calendario.
+- **Los años incompletos se descartan.** La serie CR2MET termina a mitad de año;
+  sin este filtro el último año aparecería como una sequía inexistente. El script
+  informa por consola qué años descartó.
+
+Ejemplo de salida para Aconcagua (1975–2025, año hidrológico), donde se ve la
+firma de la megasequía:
+
+| Década | Precipitación | vs. década base |
+|--------|---------------|-----------------|
+| 1970s (5 años) | 506 mm/año | base |
+| 1980s | 583 mm/año | +15,1 % |
+| 1990s | 460 mm/año | −9,1 % |
+| 2000s | 542 mm/año | +7,1 % |
+| **2010s** | **318 mm/año** | **−37,2 %** |
+| 2020s (6 años) | 359 mm/año | −29,2 % |
+
+En el mismo período la temperatura máxima sube +0,8 °C en los 2010 y +1,0 °C en
+los 2020 respecto a la década base.
+
+```powershell
+Rscript "scr\series_anuales_decadales.R"
+```
+
+Parámetros principales: `variables` (`pp`, `tav`, `tn`, `tx`, `et0`),
+`subcuencas` (`NULL` = todas), `ponderar_por_area`, `anio_hidrologico` /
+`mes_inicio`, `solo_anios_completos`, `decada_min_anios` e
+`inicio_megasequia`. Requiere `ggplot2`, `dplyr` y `tidyr`; `sf` es opcional y
+solo se usa para leer las áreas.
+
+> **CR2MET no incluye caudales.** Este script cubre precipitación, temperaturas
+> y evapotranspiración de referencia. Para contrastar con caudales observados o
+> simulados hay que sumar una fuente externa (DGA, salidas de WEAP).
 
 ---
 
