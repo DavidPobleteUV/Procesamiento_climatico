@@ -142,6 +142,9 @@ no corre con `Rscript` sin editar esa línea.
 `scr/mapa_grilla_CR2Met.R`. Va después porque toma la geometría de la grilla de
 los NetCDF ya descargados en `nc_cache/`. Corre en RStudio o con `Rscript`.
 
+También `scr/mapa_pp_media_anual.R`, que lee los NetCDF de `nc_cache/pr/` y
+dibuja la precipitación media anual de cada celda.
+
 **3. Series anuales y promedios decadales — opcional**
 
 `scr/series_anuales_decadales.R`. Consume los CSV **mensuales** del paso 1 y
@@ -298,6 +301,28 @@ solo se usa para leer las áreas.
 > **CR2MET no incluye caudales.** Este script cubre precipitación, temperaturas
 > y evapotranspiración de referencia. Para contrastar con caudales observados o
 > simulados hay que sumar una fuente externa (DGA, salidas de WEAP).
+
+---
+
+## Precipitación media anual por celda
+
+`scr/mapa_pp_media_anual.R` responde a la pregunta complementaria: en vez de
+promediar la cuenca y mirar el tiempo, no promedia en el espacio y muestra el
+**gradiente orográfico** dentro de la cuenca.
+
+Se alimenta de los NetCDF de `nc_cache/pr/` (no de los CSV): acumula el total
+mensual de cada celda, suma por año y divide por el número de años completos.
+Produce el mismo mapa en lat/lon y en UTM, con escala en km, norte y una leyenda
+por clases tipo isoyetas, más un GeoPackage con el valor de cada celda.
+
+En Aconcagua, sobre 1975–2025 (51 años completos, 612 archivos, ~1,5 min de
+proceso), el contraste dentro de la cuenca es de **281 a 814 mm/año**: una razón
+de 2,9 a 1 entre la zona costera y la alta cordillera. Es justamente el gradiente
+que justifica extraer con `exact = TRUE` en vez de la regla "centroid-in".
+
+```powershell
+Rscript "scr\mapa_pp_media_anual.R"
+```
 
 ---
 

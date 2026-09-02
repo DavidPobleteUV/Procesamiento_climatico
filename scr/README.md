@@ -94,6 +94,55 @@ NetCDF), `ggrepel` (etiquetas de subcuenca sin solape), `rstudioapi`.
 
 ---
 
+## `mapa_pp_media_anual.R`
+
+Precipitación media anual **celda a celda** sobre la cuenca. Complementa a
+`series_anuales_decadales.R`: ese promedia en el espacio y muestra la evolución
+en el tiempo; este no promedia en el espacio y muestra el gradiente orográfico.
+
+Se alimenta de los NetCDF diarios de `nc_cache/pr/`, no de los CSV: acumula el
+total mensual de cada celda, suma por año y divide por el número de años
+completos. Salidas en `Results/<cuenca>/mapas/`:
+
+- `pp_media_anual_<cuenca>_latlon.png` y `..._UTM.png` — el mismo mapa en ambos
+  sistemas, con escala en km, norte y leyenda por clases tipo isoyetas.
+- `pp_media_anual_<cuenca>.gpkg` — las celdas con el campo `pp` (mm/año) y
+  `en_cuenca`, para abrir en QGIS.
+
+Solo usa los años con los 12 meses disponibles: un año truncado subestimaría la
+media anual. Con año hidrológico abril–marzo por defecto.
+
+En Aconcagua (1975–2025, 51 años completos, 612 NetCDF, ~1,5 min) el rango
+dentro de la cuenca va de **281 a 814 mm/año**, una razón de 2,9 a 1 entre la
+zona costera y la cordillera. Las 347 celdas coinciden con las del mapa de
+grilla, como corresponde.
+
+### Uso
+
+```powershell
+Rscript "C:\Users\David\Documents\GitHub_DPL\CR2Met_extraction\scr\mapa_pp_media_anual.R"
+```
+
+Parámetros: `cuenca_nombre`, `archivo_shp`, `nombre_subcuenca`, `anios`
+(`NULL` = todos los completos), `anio_hidrologico` / `mes_inicio`,
+`buffer_celdas`, `epsg_utm`, `n_clases` (clases de la leyenda),
+`etiquetar_celdas`, `atenuar_fuera`, `pos_escala` / `pos_norte`.
+
+Requisitos: `sf`, `terra`, `ggplot2`, `dplyr`, más `utils_mapa.R` en la misma
+carpeta. Opcionales: `ggrepel`, `rstudioapi`.
+
+---
+
+## `utils_mapa.R`
+
+No se ejecuta solo: lo cargan con `source()` los dos scripts de mapas. Contiene
+la localización de la raíz del proyecto (`raiz_proyecto()`) y las capas
+cartográficas `capa_escala()` y `capa_norte()`, escritas como capas
+`annotate()` propias para no depender de `ggspatial`. Si modificas la barra de
+escala o el norte, cámbialos aquí una vez y ambos mapas quedan iguales.
+
+---
+
 ## `series_anuales_decadales.R`
 
 Lee los CSV **mensuales** de `Results/<cuenca>/` y grafica la evolución anual de
